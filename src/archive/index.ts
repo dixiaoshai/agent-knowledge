@@ -10,6 +10,15 @@ const safeInt = z.number().int().nonnegative().safe();
 const hex = z.string().regex(/^[a-f0-9]{64}$/);
 const nullableString = z.string().nullable();
 const jsonObject = z.record(z.string(), z.unknown());
+// Content mode may externalize an oversized string. The reference is explicit,
+// content-addressed and verifiable; it is never a truncated body.
+const contentRefSchema = z.strictObject({
+  path: ident.refine(value => path.isAbsolute(value) && !/[\x00-\x1f]/.test(value), 'Absolute content path required'),
+  bytes: safeInt,
+  sha256: hex,
+  media_type: z.literal('text/plain'),
+});
+const refSchema = z.strictObject({ content_ref: contentRefSchema });
 const sourceSchema = z.strictObject({ path: ident, line: safeInt.refine(n => n > 0), record_hash: hex, series: ident.optional() });
 const eventSchema = z.strictObject({
   schema_version: z.literal(1), event_id: hex, archive_seq: safeInt.refine(n => n > 0),
@@ -34,6 +43,23 @@ const usageKeys = new Set(['input_tokens', 'cached_input_tokens', 'cache_write_i
 const sha = (v: string) => createHash('sha256').update(v).digest('hex');
 const validTime = (v: string) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(v) && Number.isFinite(Date.parse(v));
 const invalid = (message: string): never => { throw new AgentKnowledgeError('INVALID_ARCHIVE', message); };
+const same = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
+const isRef = (value: unknown): boolean => refSchema.safeParse(value).success;
+const hasRef = (value: unknown, depth = 0): boolean => {
+  if (depth > 64 || value === null || typeof value !== 'object') return false;
+  if (isRef(value)) return true;
+  if (Array.isArray(value)) return value.some(entry => hasRef(entry, depth + 1));
+  return Object.values(value as Record<string, unknown>).some(entry => hasRef(entry, depth + 1));
+};
+const assertRefs = (value: unknown, depth = 0): void => {
+  if (depth > 64 || value === null || typeof value !== 'object') return;
+  const record = value as Record<string, unknown>;
+  if ('content_ref' in record) {
+    if (!isRef(value)) invalid('Invalid content reference');
+    return;
+  }
+  for (const entry of Array.isArray(value) ? value : Object.values(record)) assertRefs(entry, depth + 1);
+};
 function validEvent(event: Event): void {
   if (event.session_key !== JSON.stringify([event.runtime, event.instance_id, event.session_id])) invalid('Invalid session key');
   if (event.occurred_at !== null && !validTime(event.occurred_at)) invalid('Invalid event time');
@@ -70,6 +96,8 @@ function validEvent(event: Event): void {
     // rollouts with a payload envelope; body semantics are adapter-defined.
     if (typeof event.raw.type !== 'string') invalid('Invalid raw record');
   }
+  assertRefs(event.body);
+  assertRefs(event.raw);
   if (event.raw !== null && event.runtime === 'codex') {
     if (typeof event.raw.type !== 'string' || !event.raw.payload || typeof event.raw.payload !== 'object' || Array.isArray(event.raw.payload)) invalid('Invalid raw record');
     const payload = event.raw.payload as Record<string, unknown>;
@@ -77,9 +105,11 @@ function validEvent(event: Event): void {
     if (event.native_type !== event.raw.type + subtype) invalid('Raw record type mismatch');
     if (event.body !== null && event.kind === 'tool.called') {
       const value = payload.arguments ?? payload.input ?? payload.action ?? null;
-      if (JSON.stringify(event.body.arguments) !== JSON.stringify(value)) invalid('Tool arguments mismatch');
+      // Redaction/externalization is applied identically to body and raw, so a
+      // reference must equal the raw reference, and inline values must match.
+      if (!same(event.body.arguments, value)) invalid('Tool arguments mismatch');
     }
-    if (event.body !== null && event.kind === 'tool.returned' && JSON.stringify(event.body.output) !== JSON.stringify(payload.output ?? null)) invalid('Tool output mismatch');
+    if (event.body !== null && event.kind === 'tool.returned' && !same(event.body.output, payload.output ?? null)) invalid('Tool output mismatch');
     if (event.body !== null && ['message.user', 'message.assistant', 'reasoning.summary', 'context.compacted'].includes(event.kind)) {
       const text = (value: unknown): string => typeof value === 'string' ? value : Array.isArray(value)
         ? value.map(part => typeof part === 'string' ? part : part !== null && typeof part === 'object' && typeof (part as Record<string, unknown>).text === 'string' ? (part as Record<string, unknown>).text : '').join('\n') : '';
@@ -87,7 +117,12 @@ function validEvent(event: Event): void {
       if (event.kind === 'reasoning.summary') original = event.raw.type === 'event_msg' ? payload.text : payload.summary;
       else if (event.kind === 'context.compacted') original = payload.message ?? payload.summary;
       else original = event.raw.type === 'event_msg' ? payload.message : payload.content;
-      if (event.body.text !== text(original)) invalid('Message content mismatch');
+      if (isRef(event.body.text)) {
+        // A joined message can be externalized while raw holds the pieces;
+        // require that raw still carries a verifiable reference rather than
+        // silently accepting an unreferenced body.
+        if (!hasRef(original)) invalid('Message content reference mismatch');
+      } else if (!same(event.body.text, text(original))) invalid('Message content mismatch');
     }
   }
 }

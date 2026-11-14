@@ -119,3 +119,27 @@ test('pi content events accept native entries and recorded cost', () => {
   assert.throws(() => store.importBatch(batch(2, 3, [badSource])));
   store.close();
 });
+
+test('externalized content references are accepted, verifiable and still scoped', () => {
+  const ref = { content_ref: { path: '/private/blobs/abc.txt', bytes: 1234, sha256: hash('external body'), media_type: 'text/plain' } };
+  const returned = { ...event(1, 'ignored'), kind: 'tool.returned', native_type: 'response_item.function_call_output',
+    data: { turn_id: null, root_turn_id: null, model: null, call_id: 'call-1', output_bytes: 4147, status: 'result_observed' },
+    body: { output: ref }, raw: { type: 'response_item', payload: { type: 'function_call_output', call_id: 'call-1', output: ref } } };
+  const store = new ArchiveEvidenceStore(':memory:', 'owner', ['demo']);
+  store.importBatch(batch(0, 2, [returned, event(2, 'inline message')]));
+  const hit = store.search('blobs')[0]!;
+  assert.deepEqual(hit.event.body?.output, ref);
+  assert.deepEqual(store.read('archive-a', returned.event_id).event.body?.output, ref);
+  assert.throws(() => store.search('blobs', 'other'));
+  store.close();
+
+  // A reference must be complete and match raw; truncation or a bogus hash is rejected.
+  const mismatch = { ...returned, body: { output: { content_ref: { ...ref.content_ref, sha256: hash('other') } } } };
+  const badHash = { ...returned, body: { output: { content_ref: { ...ref.content_ref, sha256: 'not-a-hash' } } } };
+  const relative = { ...returned, body: { output: { content_ref: { ...ref.content_ref, path: 'relative.txt' } } } };
+  for (const candidate of [mismatch, badHash, relative]) {
+    const fresh = new ArchiveEvidenceStore(':memory:', 'owner', ['demo']);
+    assert.throws(() => fresh.importBatch(batch(0, 1, [candidate])));
+    fresh.close();
+  }
+});

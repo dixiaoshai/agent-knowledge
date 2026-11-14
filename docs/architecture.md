@@ -10,7 +10,7 @@
 
 执行日志的采集、原始事件快照、统一事件和删除流移交独立兄弟模块 `agent-trace`。Agent Knowledge 通过版本化 JSON content 批次消费，维护独立事件引用、事务游标与项目授权；Agent Stats 独立消费 metadata 批次。双方不读取归档内部 SQLite，也不写入对方数据库。以下原设计中的宿主采集职责应按本更新理解，文档/代码文件扫描仍由 Agent Knowledge 负责。
 
-归档证据是历史观察，不是活跃 knowledge/memory。`ArchiveEvidenceStore` 单独维护证据表和按 owner/project 限制的读取，数据库为 `<config.database>.archive-evidence.sqlite`；不套用文档当前文件哈希校验，因此原日志清理后仍可核对快照。数据库与现有异步知识事务分开，避免同进程多连接同步锁等待。MCP 增加只读 `search_archive/read_archive_event`；导入只通过 CLI，不接受 MCP 写入。经验候选生成、验证、晋升及关联失效传播仍未实现。
+归档证据是历史观察，不是活跃 knowledge/memory。content 事件可能把超大正文外置为 `content_ref`（绝对路径、字节数、SHA-256，媒体类型固定 `text/plain`）；导入时校验引用与 `raw` 一致，检索文本仍来自 `body`，正文读取需按引用校验本地文件。`ArchiveEvidenceStore` 单独维护证据表和按 owner/project 限制的读取，数据库为 `<config.database>.archive-evidence.sqlite`；不套用文档当前文件哈希校验，因此原日志清理后仍可核对快照。数据库与现有异步知识事务分开，避免同进程多连接同步锁等待。MCP 增加只读 `search_archive/read_archive_event`；导入只通过 CLI，不接受 MCP 写入。经验候选生成、验证、晋升及关联失效传播仍未实现。
 
 消费者处理幂等页、游标冲突、未知类型和删除标记；未知类型的原始证据不执行。仅本机身份/项目限制，尚无团队多用户认证或按授权过滤导出流。`record_hash` 为归档给出的源行哈希声明，批次中的 parsed raw 不足以独立重算该原始字节哈希。Agent Knowledge 自身未来模型调用用量仍可通过 UsageSink 输出；不反向作为外部宿主原始事件重复采集。
 
