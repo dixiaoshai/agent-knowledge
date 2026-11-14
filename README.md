@@ -4,11 +4,11 @@
 
 让 agent 从文档和代码获取知识，从对话和执行结果沉淀经验，并在后续会话中复用。
 
-当前状态：第一阶段本地知识检索已实现；新增共享归档批次的执行证据导入、独立游标、按项目搜索/读取和删除传播。自动经验提取与晋升尚未实现。此前以 KnowRelay 名称完成 Codex 全新会话中的合成知识检索、显式 skill 调用、文件更新/删除及无工具拒答验收；更名后已完成 40 项测试、类型检查、构建及跨项目回归，尚未重新运行真实 Codex 宿主验收。自动选择此前未观察到 skill 触发。尚未全局安装、导入真实试点资料或启用自动聊天采集。
+当前状态：第一阶段本地知识检索已实现；新增共享归档批次的执行证据导入、独立游标、按项目搜索/读取和删除传播，以及独立的 `follow` 自动拉取 worker。自动经验提取与晋升尚未实现。此前以 KnowRelay 名称完成 Codex 全新会话中的合成知识检索、显式 skill 调用、文件更新/删除及无工具拒答验收；更名后已完成 40 项测试、类型检查、构建及跨项目回归，尚未重新运行真实 Codex 宿主验收。自动选择此前未观察到 skill 触发。尚未全局安装、导入真实试点资料或启用自动聊天采集。
 
 项目命名与迁移规则见[统一命名说明](../NAMING.md)。
 
-下一阶段由 Knowledge 在自身项目实现独立 worker 主动拉取 Trace content，进度、重试和授权检查留在本项目。该 worker 与 MCP 生命周期分离，不由 Trace 运行导入命令。当前仍是手动批次导入；方案不用 hook，暂不增加自动经验提取。见[目标设计](../agent-trace/docs/continuous-collection.md)和[实施 TODO](../TODO.md)。
+`agent-knowledge follow --config <follow.json>` 主动拉取 Trace content 页，进度、重试和授权检查留在本项目；worker 与 MCP 生命周期分离，不由 Trace 运行导入命令，也不读取源日志。手动 `archive-import` 继续保留。方案不用 hook，暂不增加自动经验提取。见[运行指南](docs/running.md#trace-自动拉取follow)、[消费方约定](../agent-trace/docs/consumer-follow.md)和[实施 TODO](../TODO.md)。
 
 ## 本地运行
 
@@ -36,7 +36,7 @@ node dist/interfaces/cli.js serve --config /absolute/path/to/agent-knowledge.exa
 
 ## 已确定的方向
 
-新增共享归档消费：在独立 [agent-trace](../agent-trace/README.md) 明确采集选定会话后，使用 `archive-import --input content-page.json` 导入 v1 content 批次。`archive-search --query TEXT [--project ID]` 检索，`archive-read --archive ARCHIVE_ID --event EVENT_ID` 核对来源。归档证据保存在 `<配置database>.archive-evidence.sqlite`，与活跃知识分开，不依赖原日志仍存在，也不会把工具输出或 agent 声明自动升为确认事实。每批提交后报告本消费方游标；删除标记必须继续消费才能传播。首版不提供按权限过滤的导出流，配置必须允许批次内全部项目，否则整批拒绝；窄范围部署应使用独立归档。
+新增共享归档消费：在独立 [agent-trace](../agent-trace/README.md) 明确采集选定会话后，使用 `archive-import --input content-page.json` 导入 v1 content 批次。`archive-search --query TEXT [--project ID]` 检索，`archive-read --archive ARCHIVE_ID --event EVENT_ID` 核对来源。归档证据保存在 `<配置database>.archive-evidence.sqlite`，与活跃知识分开，不依赖原日志仍存在，也不会把工具输出或 agent 声明自动升为确认事实。`follow` 使用同一证据库保存业务游标和单 worker 租约；每页与游标同事务提交，删除标记随页传播。首版不提供按权限过滤的导出流，配置必须允许批次内全部项目，否则整批拒绝；窄范围部署应使用独立归档。
 
 - 首先接入 Codex，后续扩展其他 agent。
 - 首先在本机验证，再部署团队共享服务。

@@ -7,6 +7,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { openApplication } from '../bootstrap.js';
 import { AgentKnowledgeError } from '../core/index.js';
 import { createMcpServer } from './mcp.js';
+import { runFollow } from '../follow/worker.js';
 
 const help = `Agent Knowledge local knowledge service
 
@@ -21,6 +22,7 @@ Commands:
   archive-read  --archive ARCHIVE_ID --event EVENT_ID [--project ID]
   delete-source --source ID
   rebuild-index
+  follow        --config FOLLOW_CONFIG
   serve         Start the read-only MCP server on stdio
   help
 
@@ -37,6 +39,7 @@ const commandOptions: Record<string, ParseArgsConfig['options']> = {
   'archive-read': { archive: { type: 'string' }, event: { type: 'string' }, project: { type: 'string' } },
   'delete-source': { source: { type: 'string' } },
   'rebuild-index': {},
+  follow: { config: { type: 'string' } },
   serve: {},
   help: {},
 };
@@ -64,6 +67,12 @@ async function main(): Promise<void> {
   const eventId = command === 'archive-read' ? required(values.event, 'event') : undefined;
   const rawLimit = values.limit as string | undefined;
   if (rawLimit !== undefined && !/^(?:[1-9]|1[0-9]|20)$/.test(rawLimit)) throw new AgentKnowledgeError('INVALID_INPUT', '--limit must be an integer between 1 and 20');
+  if (command === 'follow') {
+    // The follow config points at this knowledge config; do not open the
+    // knowledge/MCP application here, so a running MCP client cannot block it.
+    process.exitCode = await runFollow(required(values.config, 'config'));
+    return;
+  }
   const { app, archive, close } = await openApplication(configPath);
   if (command === 'serve') {
     const server = createMcpServer(app, archive);

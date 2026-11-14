@@ -61,6 +61,49 @@ node dist/interfaces/cli.js delete-source --config /absolute/path/config.json --
 
 文件更新保留被替代版本以便追溯，但不允许通过 MCP 读取。`delete-source` 会在事务内清理来源的原文快照、记录、索引和幂等回执，留下只含元数据的删除标记和操作审计。它不删除原目录。重新导入需明确再次执行 `sync`。SQLite 的 WAL、外部备份或磁盘物理残留不属于此版本的安全擦除保证。
 
+## Trace 自动拉取（follow）
+
+当 [agent-trace](../../agent-trace/README.md) 以 `serve --config` 常驻运行并授权 Knowledge `content` 视图时，使用独立的 follow worker 自动续读，不必手工导出/导入批次。follow 只读取 Trace 的本机只读 API（`GET /v1/status`、`GET /v1/events`），不读取 Codex/pi 源日志，也不改 Trace 数据库。
+
+复制 [agent-knowledge.follow.example.json](../agent-knowledge.follow.example.json)，把 `config` 指向既有的 Knowledge 配置（数据库、`allowed_project_ids` 与 owner 都来自它）：
+
+```json
+{
+  "schema_version": 1,
+  "trace_url": "http://127.0.0.1:8766",
+  "token_env": "AGENT_TRACE_KNOWLEDGE_TOKEN",
+  "config": "./agent-knowledge.json",
+  "page_size": 200,
+  "idle_seconds": 15,
+  "request_timeout_seconds": 20,
+  "max_backoff_seconds": 300
+}
+```
+
+- `trace_url` 只能是回环 `http://` 地址并带端口，不能含路径、查询或凭据；必须与 Trace 的 `api.host`/`api.port` 一致。
+- 明文 token 只从 `token_env` 指定的环境变量读取，缺失或首尾空白即启动失败，不回落匿名。Trace 配置只保存 token 的 SHA-256 摘要；Knowledge 的客户端必须授权 `content` 视图。
+- 未知字段、非回环地址、视图/数据库字段一律拒绝。`view` 固定为 `content`，不提供切换开关。
+- `page_size` 不能超过 Trace 服务端上限（默认 1000）；超出时以 `PAGE_TOO_LARGE` 永久错误停止，需调小后重启。
+
+启动前台 worker（SIGINT/SIGTERM 触发优雅停止）：
+
+```sh
+AGENT_TRACE_KNOWLEDGE_TOKEN="$(cat /path/to/secret)" \
+  node dist/interfaces/cli.js follow --config /absolute/path/follow.json
+```
+
+stdout 每行一个 NDJSON 事件（`follow.started`、`follow.page`、`follow.idle`、`follow.error`、`follow.state`、`follow.stopped`），不包含 token、正文或完整事件。`follow.page` 只在本地事务提交成功后输出，`next_cursor` 是已提交游标。stderr 只在启动失败或永久错误时输出单行 JSON。退出码：`0` 信号停止；`1` 配置/启动/租约失败；`2` 启动后遇到永久错误。临时错误（连接失败、超时、HTTP 408/429/5xx、本地库忙）不退出，按 `idle_seconds` 起指数退避并遵守 `Retry-After`，游标不前进。
+
+同步状态与业务游标都在 `<配置database>.archive-evidence.sqlite`：
+
+- 业务游标仍由 `importBatch` 与证据/墓碑同事务提交；worker 每轮都从数据库已提交游标继续，重启不会用内存状态覆盖它。
+- `archive_follow_state` 记录 `trace_url`、`archive_id`、固定视图、最近尝试/成功时间、最近错误和单 worker 租约。同一证据库同时只允许一个 worker；第二个实例以 `FOLLOW_LOCKED` 退出（启动失败，退出码 1）。崩溃后的租约可在过期后接管，死亡进程的租约可立即接管。
+- 首次绑定会沿用同一证据库中已有的手动导入游标；已绑定后 `archive_id`、`trace_url` 或视图变化都会以永久错误暂停（`ARCHIVE_CHANGED` / `TRACE_CHANGED` / `FOLLOW_STATE`），需要显式重建目标库或修正配置，禁止静默归零。
+- `VIEW_UNAVAILABLE` 表示 Trace 归档是 `metadata` 模式，不能提供正文；应使用独立的 content 归档。
+- 删除墓碑随页到达后在本地事务清除证据投影；已提交旧页的重试是幂等重放，不会复活数据。Trace 不按消费进度清理历史，离线期间墓碑仍需保留。
+
+follow 与 MCP `serve`、看板类进程完全独立：worker 只打开证据库和本机 HTTP，无需 MCP 客户端在线；关闭聊天不会停止同步。反过来，follow 运行时 MCP 的只读查询仍可用（同一证据库的短事务）。手动 `archive-import` 继续保留，用于一次性回放或显式重建。
+
 ## MCP 与 Codex
 
 服务通过 STDIO 提供四个只读工具，不提供导入、任意路径读取或身份设置参数：
