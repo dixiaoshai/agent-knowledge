@@ -86,3 +86,36 @@ test('deletion cannot reuse an ordinary event ID or repeat under a new sequence'
   assert.equal(store.importBatch(batch(1, 2, [good])).cursor, 2);
   store.close();
 });
+
+
+test('pi content events accept native entries and recorded cost', () => {
+  const store = new ArchiveEvidenceStore(':memory:', 'owner', ['demo']);
+  const piHash = (seq: number, kind: string) => hash(JSON.stringify(['pi', 'local', 'pi-session', kind, seq]));
+  const start = {
+    schema_version: 1, event_id: piHash(1, 'session.started'), archive_seq: 1,
+    runtime: 'pi', instance_id: 'local', session_id: 'pi-session', session_key: '["pi","local","pi-session"]',
+    project_id: 'demo', kind: 'session.started', occurred_at: '2026-01-01T00:00:00Z',
+    observed_at: '2026-01-01T00:00:00Z', native_type: 'session',
+    source: { path: '/gone/pi.jsonl', line: 1, record_hash: hash('pi-start') },
+    data: { turn_id: null, root_turn_id: null, model: null, cwd: '/demo', created_at: '2026-01-01T00:00:00Z', title: 'Pi session' },
+    body: null, raw: { type: 'session', version: 3, id: 'pi-session', cwd: '/demo' },
+  };
+  const usage = {
+    schema_version: 1, event_id: piHash(4, 'usage.snapshot'), archive_seq: 2,
+    runtime: 'pi', instance_id: 'local', session_id: 'pi-session', session_key: '["pi","local","pi-session"]',
+    project_id: 'demo', kind: 'usage.snapshot', occurred_at: '2026-01-01T00:00:01Z',
+    observed_at: '2026-01-01T00:00:01Z', native_type: 'message.assistant',
+    source: { path: '/gone/pi.jsonl', line: 4, record_hash: hash('pi-usage') },
+    data: { turn_id: 'u1', root_turn_id: null, model: 'deepseek-flash', cumulative: { input_tokens: 150, output_tokens: 20, total_tokens: 170 },
+      last_usage: { input_tokens: 150, output_tokens: 20, total_tokens: 170 }, rate_limit_only: false, cost_usd: 0.001, cost_source: 'model_rates' },
+    body: null, raw: { type: 'message', id: 'a1', message: { role: 'assistant', content: [] } },
+  };
+  assert.equal(store.importBatch(batch(0, 2, [start, usage])).imported, 2);
+  const hit = store.read('archive-a', usage.event_id).event;
+  assert.equal(hit.data.cost_usd, 0.001);
+  const bad = { ...usage, event_id: piHash(5, 'bad'), archive_seq: 3, data: { ...usage.data, cost_usd: -1 } };
+  assert.throws(() => store.importBatch(batch(2, 3, [bad])));
+  const badSource = { ...usage, event_id: piHash(6, 'bad-source'), archive_seq: 3, data: { ...usage.data, cost_source: 'invoice' } };
+  assert.throws(() => store.importBatch(batch(2, 3, [badSource])));
+  store.close();
+});
