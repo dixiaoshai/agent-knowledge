@@ -40,9 +40,9 @@ npm run check
 | 命令 | 内容 |
 |---|---|
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm test` | `node --import tsx --test tests/*.test.ts` |
 | `npm run build` | `tsc -p tsconfig.build.json`，产物写入 `dist/` |
-| `npm run check` | 以上三项依次执行 |
+| `npm test` | `node --import tsx --test tests/*.test.ts` |
+| `npm run check` | 以上三项依次执行（先构建，验收测试依赖 `dist/`） |
 
 宿主验收（合成客户端、隔离目录内安装带探针的 skill 副本，保留调用记录，不全局安装）：
 
@@ -54,6 +54,8 @@ npm run verify:codex -- --case unavailable   # 只验证无工具拒答
 `dist/`、`.knowrelay/`、知识库和证据投影数据库都不提交，均由本地构建或运行产生。
 
 > 测试和 fixtures 使用合成资料。不要让测试或验收脚本指向真实资料目录、真实 Codex 会话或已有知识库，避免把真实内容写进仓库或临时产物。
+>
+> `tests/archive-mcp.test.ts` 需要兄弟仓库 `agent-trace` 的源码和 fixture；工作区里存在 `../agent-trace` 时才会执行，单独 checkout 本仓库时会跳过。跨项目行为变化应在完整工作区里跑 `npm run check`。
 
 ## CI 流水线
 
@@ -71,13 +73,13 @@ npm run verify:codex -- --case unavailable   # 只验证无工具拒答
 
 | Job | 内容 |
 |---|---|
-| `Node 24.15.0` | `npm ci` → `npm run check`（typecheck + test + build），runner 固定 `ubuntu-24.04` |
+| `Node 24.15.0` | `npm ci` → `npm run check`（typecheck + build + test），runner 固定 `ubuntu-24.04` |
 | `Sensitive data scan` | `python3 scripts/check_sensitive.py` |
 | `CI success` | 汇总以上 Job，**只有这一个**可被设为分支保护的必需检查 |
 
 同一分支的新 push 会取消上一次未完成的运行（`concurrency`），各 Job 有 `timeout-minutes`。
 
-`npm run verify:codex` 不在 CI 中运行：它需要真实 Codex 宿主环境和隔离目录安装 skill 副本，属于人工验收。
+`npm run verify:codex` 不在 CI 中运行：它需要真实 Codex 宿主环境和隔离目录安装 skill 副本，属于人工验收。跨项目的 `archive-mcp` 测试在 CI 中自动跳过（没有兄弟仓库 checkout）。
 
 **本地复现**
 

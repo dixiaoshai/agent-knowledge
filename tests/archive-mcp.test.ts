@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,9 +13,12 @@ const run = promisify(execFile);
 const knowrelayCli = path.resolve('src/interfaces/cli.ts');
 const archiveCli = path.resolve('../agent-trace/src/cli.ts');
 const fixture = path.resolve('../agent-trace/fixtures/codex/demo.jsonl');
+// CI checks out only this repository; the cross-project test needs a sibling
+// agent-trace checkout and runs locally (`npm run check` in the workspace).
+const skipSibling = existsSync(archiveCli) && existsSync(fixture) ? false : 'requires a sibling agent-trace checkout';
 const body = (result: unknown) => JSON.parse(((result as { content: Array<{ text: string }> }).content)[0]!.text);
 
-test('archive CLI and stdio MCP expose scoped durable evidence and honor deletion', async t => {
+test('archive CLI and stdio MCP expose scoped durable evidence and honor deletion', { skip: skipSibling }, async t => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'knowrelay-archive-mcp-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const source = path.join(dir, 'synthetic.jsonl');
