@@ -1,10 +1,10 @@
 # Agent Knowledge 架构决策
 
-状态：第一阶段知识检索与共享归档证据消费已实现；自动记忆提取和持续改进为后续阶段。更新日期：2026-11-14。
+状态：第一阶段知识检索、共享归档证据消费与本项目主动拉取 worker 已实现；自动记忆提取和持续改进为后续阶段。更新日期：2026-11-14。
 
-## 下一阶段：本项目主动拉取（尚未实现）
+## 本项目主动拉取（follow）
 
-已确认采用无 hook 的 Trace 常驻日志扫描，Knowledge 在自身项目维护独立的自动拉取 worker、消费进度、重试与授权；Trace 只提供只读 v1 事件流，不保存 Knowledge 的投递状态、不运行本项目命令。worker 与 MCP 连接生命周期分离，关闭聊天不停止同步。证据仍进入独立证据库，不自动转为确认知识，也不引入模型提取。目标接口、故障语义与交接任务见[设计](../../agent-trace/docs/continuous-collection.md)和 [TODO](../../TODO.md)。
+采用无 hook 的 Trace 常驻日志扫描，Knowledge 在自身项目维护独立的自动拉取 worker、消费进度、重试与授权；Trace 只提供只读 v1 事件流，不保存 Knowledge 的投递状态、不运行本项目命令。`src/follow/` 实现严格配置、回环 HTTP 客户端、状态校验和单 worker 租约；每页复用 `ArchiveEvidenceStore.importBatch`，证据投影、墓碑与归档游标在同一本地事务提交。worker 与 MCP 连接生命周期分离，关闭聊天不停止同步；也可在不运行 MCP 时单独运行。证据仍进入独立证据库，不自动转为确认知识，也不引入模型提取。目标接口、故障语义见[消费方约定](../../agent-trace/docs/consumer-follow.md)和 [TODO](../../TODO.md)。
 
 ## 2026-11-14 共享归档边界更新
 

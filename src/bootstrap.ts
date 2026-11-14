@@ -47,6 +47,16 @@ export async function loadConfig(configPath: string): Promise<Config> {
   };
 }
 
+/** Local owner identity; every database and MCP request uses this same value. */
+export function localOwnerId(): string {
+  return `uid:${userInfo().uid}`;
+}
+
+/** Evidence projection file that belongs to a knowledge database. */
+export function evidenceDatabasePath(database: string): string {
+  return `${database}.archive-evidence.sqlite`;
+}
+
 export async function openApplication(configPath: string): Promise<{ app: AgentKnowledge; archive: ArchiveEvidenceStore; close: () => void; config: Config }> {
   const config = await loadConfig(configPath);
   await mkdir(path.dirname(config.database), { recursive: true, mode: 0o700 });
@@ -54,10 +64,10 @@ export async function openApplication(configPath: string): Promise<{ app: AgentK
   let archive: ArchiveEvidenceStore;
   // Separate projection DB: synchronous archive imports cannot block a pending
   // async knowledge transaction on another connection in this same process.
-  try { archive = new ArchiveEvidenceStore(`${config.database}.archive-evidence.sqlite`, `uid:${userInfo().uid}`, config.allowed_project_ids); }
+  try { archive = new ArchiveEvidenceStore(evidenceDatabasePath(config.database), localOwnerId(), config.allowed_project_ids); }
   catch (error) { store.close(); throw error; }
   const app = new AgentKnowledge(
-    { owner_id: `uid:${userInfo().uid}`, allowed_project_ids: config.allowed_project_ids, sources: config.sources },
+    { owner_id: localOwnerId(), allowed_project_ids: config.allowed_project_ids, sources: config.sources },
     store.repositories, store.uow, store.index, { scan: scanSource },
   );
   return { app, archive, close: () => { archive.close(); store.close(); }, config };

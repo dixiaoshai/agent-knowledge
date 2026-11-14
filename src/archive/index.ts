@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, chmodSync } from 'node:fs';
+import { hostname } from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { AgentKnowledgeError } from '../core/index.js';
@@ -19,6 +20,24 @@ const contentRefSchema = z.strictObject({
   media_type: z.literal('text/plain'),
 });
 const refSchema = z.strictObject({ content_ref: contentRefSchema });
+
+export type FollowErrorClass = 'transient' | 'permanent';
+export type FollowErrorCode = string;
+export interface FollowState {
+  follow_id: string;
+  trace_url: string;
+  archive_id: string | null;
+  view: string;
+  created_at: string;
+  updated_at: string;
+  last_attempt_at: string | null;
+  last_success_at: string | null;
+  last_error_code: string | null;
+  last_error_class: FollowErrorClass | null;
+  last_error_at: string | null;
+  lease_owner: string | null;
+  lease_expires_at: number | null;
+}
 const sourceSchema = z.strictObject({ path: ident, line: safeInt.refine(n => n > 0), record_hash: hex, series: ident.optional() });
 const eventSchema = z.strictObject({
   schema_version: z.literal(1), event_id: hex, archive_seq: safeInt.refine(n => n > 0),
@@ -141,7 +160,13 @@ export class ArchiveEvidenceStore {
       CREATE TABLE IF NOT EXISTS archive_evidence_pages(owner_id TEXT NOT NULL,archive_id TEXT NOT NULL,start_cursor INTEGER NOT NULL,end_cursor INTEGER NOT NULL,fingerprint TEXT NOT NULL,PRIMARY KEY(owner_id,archive_id,start_cursor,end_cursor));
       CREATE TABLE IF NOT EXISTS archive_evidence_events(owner_id TEXT NOT NULL,archive_id TEXT NOT NULL,event_id TEXT NOT NULL,seq INTEGER NOT NULL,session_key TEXT NOT NULL,project_id TEXT NOT NULL,payload TEXT NOT NULL,search_text TEXT NOT NULL,PRIMARY KEY(owner_id,archive_id,event_id),UNIQUE(owner_id,archive_id,seq));
       CREATE TABLE IF NOT EXISTS archive_evidence_deleted(owner_id TEXT NOT NULL,archive_id TEXT NOT NULL,session_key TEXT NOT NULL,PRIMARY KEY(owner_id,archive_id,session_key));
-      CREATE INDEX IF NOT EXISTS archive_evidence_scope ON archive_evidence_events(owner_id,project_id,archive_id,seq);`);
+      CREATE INDEX IF NOT EXISTS archive_evidence_scope ON archive_evidence_events(owner_id,project_id,archive_id,seq);
+      CREATE TABLE IF NOT EXISTS archive_follow_state(
+        follow_id TEXT PRIMARY KEY, trace_url TEXT NOT NULL, archive_id TEXT, view TEXT NOT NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        last_attempt_at TEXT, last_success_at TEXT,
+        last_error_code TEXT, last_error_class TEXT, last_error_at TEXT,
+        lease_owner TEXT, lease_expires_at REAL);`);
     } catch (error) { this.db.close(); throw error; }
   }
   private scope(projectId?: string): readonly string[] {
@@ -211,5 +236,120 @@ export class ArchiveEvidenceStore {
     if (!row) throw new AgentKnowledgeError('NOT_FOUND', 'Archive evidence not found in scope');
     return { archive_id: archiveId, event: JSON.parse(row.payload as string) as Event };
   }
+  // -- follow worker state -------------------------------------------------
+  // The worker owns its progress. These rows only record identity, health and
+  // a single-worker lease; they never replace the committed archive cursor.
+
+  followState(followId: string): FollowState | null {
+    const row = this.db.prepare('SELECT * FROM archive_follow_state WHERE follow_id=?').get(followId);
+    return row ? followRow(row) : null;
+  }
+
+  ensureFollow(followId: string, traceUrl: string, view: string, now: string): FollowState {
+    this.db.prepare(`INSERT OR IGNORE INTO archive_follow_state(follow_id,trace_url,view,created_at,updated_at)
+      VALUES(?,?,?,?,?)`).run(followId, traceUrl, view, now, now);
+    const state = this.followState(followId);
+    if (!state) throw new AgentKnowledgeError('INVALID_ARCHIVE', 'Cannot create follow state');
+    return state;
+  }
+
+  /** Existing manual imports may have a cursor but no follow binding yet. */
+  cursorBindings(): Array<{ archive_id: string; cursor: number }> {
+    return this.db.prepare('SELECT archive_id,cursor FROM archive_evidence_cursors WHERE owner_id=? ORDER BY archive_id')
+      .all(this.ownerId)
+      .map(row => ({ archive_id: String(row.archive_id), cursor: Number(row.cursor) }));
+  }
+
+  committedCursor(archiveId: string): number {
+    const row = this.db.prepare('SELECT cursor FROM archive_evidence_cursors WHERE owner_id=? AND archive_id=?')
+      .get(this.ownerId, archiveId);
+    return row ? Number(row.cursor) : 0;
+  }
+
+  acquireFollowLease(followId: string, owner: string, ttlSeconds: number, nowMs: number): FollowState {
+    const nowSeconds = nowMs / 1000;
+    const expires = nowSeconds + ttlSeconds;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const state = this.followState(followId);
+      if (!state) throw new AgentKnowledgeError('INVALID_ARCHIVE', 'Follow state is missing');
+      if (state.lease_owner && state.lease_owner !== owner
+          && state.lease_expires_at !== null && state.lease_expires_at > nowSeconds
+          && leaseOwnerAlive(state.lease_owner)) {
+        throw new AgentKnowledgeError('FOLLOW_LOCKED', 'Another follow worker holds the lease for this evidence database');
+      }
+      this.db.prepare('UPDATE archive_follow_state SET lease_owner=?, lease_expires_at=? WHERE follow_id=?')
+        .run(owner, expires, followId);
+      this.db.exec('COMMIT');
+      return this.followState(followId)!;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  renewFollowLease(followId: string, owner: string, ttlSeconds: number, nowMs: number): void {
+    const result = this.db.prepare('UPDATE archive_follow_state SET lease_expires_at=? WHERE follow_id=? AND lease_owner=?')
+      .run(nowMs / 1000 + ttlSeconds, followId, owner);
+    if (Number(result.changes) !== 1) {
+      throw new AgentKnowledgeError('FOLLOW_LOCKED', 'Follow lease was lost; another worker may have taken over');
+    }
+  }
+
+  releaseFollowLease(followId: string, owner: string): void {
+    this.db.prepare('UPDATE archive_follow_state SET lease_owner=NULL, lease_expires_at=NULL WHERE follow_id=? AND lease_owner=?')
+      .run(followId, owner);
+  }
+
+  bindFollow(followId: string, archiveId: string, traceUrl: string, now: string): void {
+    const result = this.db.prepare(`UPDATE archive_follow_state SET archive_id=?, trace_url=?, updated_at=?
+      WHERE follow_id=? AND (archive_id IS NULL OR archive_id=?)`).run(archiveId, traceUrl, now, followId, archiveId);
+    if (Number(result.changes) !== 1) {
+      throw new AgentKnowledgeError('ARCHIVE_CHANGED', 'Stored archive_id differs from the Trace response');
+    }
+  }
+
+  recordFollowAttempt(followId: string, now: string): void {
+    this.db.prepare('UPDATE archive_follow_state SET last_attempt_at=?, updated_at=? WHERE follow_id=?')
+      .run(now, now, followId);
+  }
+
+  recordFollowSuccess(followId: string, archiveId: string, now: string): void {
+    this.db.prepare(`UPDATE archive_follow_state SET archive_id=?, last_success_at=?, updated_at=?,
+      last_error_code=NULL, last_error_class=NULL, last_error_at=NULL WHERE follow_id=?`)
+      .run(archiveId, now, now, followId);
+  }
+
+  recordFollowError(followId: string, code: string, errorClass: FollowErrorClass, now: string): void {
+    this.db.prepare(`UPDATE archive_follow_state SET last_error_code=?, last_error_class=?, last_error_at=?,
+      updated_at=? WHERE follow_id=?`).run(code, errorClass, now, now, followId);
+  }
+
   close(): void { this.db.close(); }
+}
+
+/** Same-host lease owners are checked against the live process table. */
+function leaseOwnerAlive(owner: string): boolean {
+  const parts = owner.split(':');
+  if (parts.length < 2 || parts[0] !== hostname()) return true;
+  const pid = Number(parts[1]);
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+function followRow(row: Record<string, unknown>): FollowState {
+  return {
+    follow_id: String(row.follow_id),
+    trace_url: String(row.trace_url),
+    archive_id: row.archive_id === null || row.archive_id === undefined ? null : String(row.archive_id),
+    view: String(row.view),
+    created_at: String(row.created_at),
+    updated_at: String(row.updated_at),
+    last_attempt_at: row.last_attempt_at === null || row.last_attempt_at === undefined ? null : String(row.last_attempt_at),
+    last_success_at: row.last_success_at === null || row.last_success_at === undefined ? null : String(row.last_success_at),
+    last_error_code: row.last_error_code === null || row.last_error_code === undefined ? null : String(row.last_error_code),
+    last_error_class: row.last_error_class === 'transient' || row.last_error_class === 'permanent' ? row.last_error_class : null,
+    last_error_at: row.last_error_at === null || row.last_error_at === undefined ? null : String(row.last_error_at),
+    lease_owner: row.lease_owner === null || row.lease_owner === undefined ? null : String(row.lease_owner),
+    lease_expires_at: row.lease_expires_at === null || row.lease_expires_at === undefined ? null : Number(row.lease_expires_at),
+  };
 }

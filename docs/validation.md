@@ -59,3 +59,32 @@ PATH 中的 `codex --version` 返回 `spawn …/codex-darwin-x64/…/codex ENOEN
 2026-11-14 正文归档兼容：`npm run check` 42 项测试、类型检查和构建通过。新增覆盖 content 模式下大字符串外置的 `content_ref`：导入时校验绝对路径、字节数、SHA-256 与媒体类型，要求 `body` 与 `raw` 引用一致，拒绝相对路径、错误哈希与正文/原始记录不一致；检索仍按项目范围，`archive-read`/MCP 原样返回引用而不读取任意路径。另用合成 70 KB 工具输出跑通 Trace `ingest`/`export` → Knowledge `archive-import`/`archive-search`/`archive-read`：`content_ref` 可检索并按项目读取，引用元数据（字节数、SHA-256）原样保留。未接入真实 Trace content 归档或外置 blob 的实际读取。
 
 用户本轮选择暂不导入真实资料。尚未全局安装服务/skill、导入真实试点目录、读取历史聊天或连接提取模型。自动选择仍需更多代表性任务观察；合成结果不能代表真实语料准确率。
+
+## 自动拉取 worker（follow，2026-11-14）
+
+实际执行（临时数据库、回环地址、合成 Trace API；未读取真实日志、未连接真实 Trace 或启用常驻同步）：
+
+| 范围 | 命令 | 结果 |
+| --- | --- | --- |
+| Agent Knowledge | `npm run check` | 类型检查、**57 项测试**、构建通过 |
+| follow 示例配置 | `loadFollowConfig('agent-knowledge.follow.example.json')` | 通过；指向示例知识配置，`content` 视图固定，默认 200/15/20/300 |
+
+新增 `tests/follow.test.ts` 覆盖：
+
+- 严格配置：回环 `http` + 显式端口、拒绝路径/查询/凭据/非回环、`token_env` 命名、未知字段（含 `view`/`database`）、相对路径解析、数值边界与默认值；token 只从环境变量读取，缺失/空白报 `TOKEN_MISSING`。
+- 正常链路：`/v1/status` 探针绑定 `archive_id`，按 `page_size` 分页取 content 页，`follow.page` 只在本地提交后输出，证据可检索；重启 worker 从已提交游标继续，重复页幂等。
+- 非法页不推进游标且为永久错误：错误视图、错误起始游标、不前进、回退游标、事件过多、乱序/越界事件、未知信封字段、`archive_id` 变化；metadata 归档报 `VIEW_UNAVAILABLE`，`page_size` 超服务端上限报 `PAGE_TOO_LARGE`。
+- 故障分类：503 + `Retry-After`、超时、连接拒绝为 transient；401/403 为 permanent；重试成功后游标才前进。
+- 租约与身份：第二个 worker 报 `FOLLOW_LOCKED`，释放后可接管；同机死亡进程的租约可立即接管；`trace_url` 变化报 `TRACE_CHANGED`。
+- 授权与回滚：未授权项目的整页以 `FORBIDDEN` 永久拒绝，重复/冲突事件身份导致本地事务回滚，游标均停在原值。
+- 退避重试：`run()` 遇到 500 时输出 transient `follow.error` 和 `retry_in_seconds`，退避后自动追平；追平后由信号停止，退出码 0。
+- 删除与序列：墓碑清除证据，已提交旧页重试为幂等重放且不复活；同一会话的后续事件被拒绝；序列空洞合法。
+- 并发：worker 连续提交页时，另一连接持续检索证据库不报锁错误。
+- `run()` 退出码：永久错误输出 `follow.error`/`follow.stopped` 并返回 2；信号停止返回 0 且释放租约；CLI `follow` 收到 SIGTERM 后正常停止，缺失 token 退出 1。
+- `validatePage` 直接回归信封与事件顺序规则。
+
+明确未验证：
+
+- 未与真实 `agent-trace serve`、真实 Codex/pi content 归档联调；未测试 Stats/Knowledge 同时运行、Trace 重启或网络中断后的端到端补取。
+- 未实现目标库重建的交互式流程；当前要求显式删除/移动目标库并重新从 0 回放。
+- 未做长时间运行、blob GC/保留期、MCP 客户端压力测试或 reviewer 独立审查。
