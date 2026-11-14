@@ -56,4 +56,6 @@ PATH 中的 `codex --version` 返回 `spawn …/codex-darwin-x64/…/codex ENOEN
 
 2026-11-14 新增共享归档证据验证：`npm run check` 的 38 项测试、类型检查和构建通过；包含真实归档 CLI → KnowRelay CLI → stdio MCP 的合成端到端、原来源删除后读取、项目范围拒绝和墓碑删除。三项目独立分页/重复消费/统计隔离另由 agent-trace 的 `npm run verify:consumers` 验证通过。独立审查发现的删除事件身份校验缺口已修复并经定向复核。详情见 [共享归档验证记录](../../agent-trace/docs/validation.md)。没有把合成结果表述为真实历史日志兼容性验收。
 
+2026-11-14 正文归档兼容：`npm run check` 42 项测试、类型检查和构建通过。新增覆盖 content 模式下大字符串外置的 `content_ref`：导入时校验绝对路径、字节数、SHA-256 与媒体类型，要求 `body` 与 `raw` 引用一致，拒绝相对路径、错误哈希与正文/原始记录不一致；检索仍按项目范围，`archive-read`/MCP 原样返回引用而不读取任意路径。另用合成 70 KB 工具输出跑通 Trace `ingest`/`export` → Knowledge `archive-import`/`archive-search`/`archive-read`：`content_ref` 可检索并按项目读取，引用元数据（字节数、SHA-256）原样保留。未接入真实 Trace content 归档或外置 blob 的实际读取。
+
 用户本轮选择暂不导入真实资料。尚未全局安装服务/skill、导入真实试点目录、读取历史聊天或连接提取模型。自动选择仍需更多代表性任务观察；合成结果不能代表真实语料准确率。
