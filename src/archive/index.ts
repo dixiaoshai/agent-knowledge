@@ -10,7 +10,7 @@ const safeInt = z.number().int().nonnegative().safe();
 const hex = z.string().regex(/^[a-f0-9]{64}$/);
 const nullableString = z.string().nullable();
 const jsonObject = z.record(z.string(), z.unknown());
-const sourceSchema = z.strictObject({ path: ident, line: safeInt.refine(n => n > 0), record_hash: hex });
+const sourceSchema = z.strictObject({ path: ident, line: safeInt.refine(n => n > 0), record_hash: hex, series: ident.optional() });
 const eventSchema = z.strictObject({
   schema_version: z.literal(1), event_id: hex, archive_seq: safeInt.refine(n => n > 0),
   runtime: ident, instance_id: ident, session_id: ident, session_key: ident, project_id: ident,
@@ -23,11 +23,11 @@ const batchSchema = z.strictObject({ schema_version: z.literal(1), archive_id: i
 type Event = z.infer<typeof eventSchema>;
 const common = ['turn_id', 'root_turn_id', 'model'];
 const fields: Record<string, string[]> = {
-  'session.started': ['cwd', 'parent_session_id', 'forked_from_session_id', 'created_at', 'cli_version'],
+  'session.started': ['cwd', 'parent_session_id', 'forked_from_session_id', 'created_at', 'cli_version', 'title'],
   'turn.context': [], 'turn.started': [], 'turn.completed': [], 'turn.interrupted': [],
   'message.user': ['title'], 'message.assistant': [], 'reasoning.summary': ['available'],
   'tool.called': ['call_id', 'name', 'input_bytes'], 'tool.returned': ['call_id', 'output_bytes', 'status'],
-  'usage.snapshot': ['cumulative', 'last_usage', 'rate_limit_only'], 'context.compacted': [],
+  'usage.snapshot': ['cumulative', 'last_usage', 'rate_limit_only', 'cost_usd', 'cost_source'], 'context.compacted': [],
   'source.unknown': [], 'session.deleted': [],
 };
 const usageKeys = new Set(['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens', 'total_tokens']);
@@ -57,12 +57,20 @@ function validEvent(event: Event): void {
   if (typeof d.title === 'string' && Array.from(d.title).length > 80) invalid('Invalid title');
   for (const key of ['input_bytes', 'output_bytes']) if (key in d && d[key] !== null && (!Number.isSafeInteger(d[key]) || Number(d[key]) < 0)) invalid('Invalid size');
   for (const key of ['available', 'rate_limit_only']) if (key in d && typeof d[key] !== 'boolean') invalid('Invalid flag');
+  if ('cost_usd' in d && d.cost_usd !== null
+      && (typeof d.cost_usd !== 'number' || !Number.isFinite(d.cost_usd) || d.cost_usd < 0)) invalid('Invalid cost');
+  if ('cost_source' in d && d.cost_source !== null && !['provider', 'model_rates'].includes(d.cost_source as string)) invalid('Invalid cost source');
   if ('status' in d && d.status !== 'result_observed') invalid('Invalid status');
   for (const key of ['cumulative', 'last_usage']) if (key in d) {
     if (!d[key] || typeof d[key] !== 'object' || Array.isArray(d[key])) invalid('Invalid usage');
     for (const [name, value] of Object.entries(d[key] as Record<string, unknown>)) if (!usageKeys.has(name) || !Number.isSafeInteger(value) || Number(value) < 0) invalid('Invalid usage');
   }
-  if (event.raw !== null) {
+  if (event.raw !== null && event.runtime === 'pi') {
+    // Pi raw records are native session entries (type/id/message), not Codex
+    // rollouts with a payload envelope; body semantics are adapter-defined.
+    if (typeof event.raw.type !== 'string') invalid('Invalid raw record');
+  }
+  if (event.raw !== null && event.runtime === 'codex') {
     if (typeof event.raw.type !== 'string' || !event.raw.payload || typeof event.raw.payload !== 'object' || Array.isArray(event.raw.payload)) invalid('Invalid raw record');
     const payload = event.raw.payload as Record<string, unknown>;
     const subtype = typeof payload.type === 'string' ? '.' + payload.type : '';
