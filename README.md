@@ -81,4 +81,4 @@ node dist/interfaces/cli.js serve --config /absolute/path/to/agent-knowledge.exa
 
 ## 参与贡献
 
-CI 会在每个 Pull Request 上运行 Node 24.15.0 的 typecheck / 测试 / 构建，以及敏感信息扫描，结果汇总为 `CI success`。分支与合并、本地检查、CI 与分支保护、敏感信息检查的说明见 [CONTRIBUTING.md](CONTRIBUTING.md)；所有改动走 Pull Request，合并前在最新 `main` 上复跑 `npm run check`，涉及宿主接入或 skill 行为变化再跑 `npm run verify:codex`。
+CI 会在每个 Pull Request 上运行 Node 24.15.0 的 typecheck / 测试 / 构建，以及敏感信息扫描，结果汇总为 `CI success`，`main` 要求该检查通过后才能合并。分支与合并、本地检查、CI 与分支保护、敏感信息检查的说明见 [CONTRIBUTING.md](CONTRIBUTING.md)；所有改动走 Pull Request，合并前在最新 `main` 上复跑 `npm run check`，涉及宿主接入或 skill 行为变化再跑 `npm run verify:codex`。
