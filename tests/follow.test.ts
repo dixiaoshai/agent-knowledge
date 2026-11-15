@@ -393,7 +393,7 @@ test('a second worker is locked out, dead owners are taken over and archive/trac
   assert.equal(h2.errors[0]!.code, 'TRACE_CHANGED');
 });
 
-test('unauthorized projects and duplicate event identities roll back without advancing', async t => {
+test('out-of-scope projects are skipped as consumption scope while duplicate identities roll back', async t => {
   const { state, url } = await traceServer(t, {
     eventsHandler: after => ({ status: 200, body: page(state.archiveId, after, after + 1, [event(after + 1, 'other project', 's1', 'other')], false) }),
   });
@@ -401,15 +401,21 @@ test('unauthorized projects and duplicate event identities roll back without adv
   const worker = workerFor(h, url);
   t.after(() => { worker.releaseLease(); worker.close(); });
   assert.equal(await worker.start(), true);
-  await assert.rejects(worker.cycle(), (error: FollowError) => error.code === 'FORBIDDEN' && error.klass === 'permanent');
-  assert.equal(worker.committedCursor, 0);
-
-  state.eventsHandler = after => after === 0
-    ? { status: 200, body: page(state.archiveId, 0, 1, [event(1, 'original')], false) }
-    : { status: 200, body: page(state.archiveId, 1, 2, [{ ...event(1, 'original'), archive_seq: 2 }], false) };
-  assert.equal((await worker.cycle()).cursor, 1);
-  await assert.rejects(worker.cycle(), (error: FollowError) => error.code === 'INVALID_PAGE' && error.klass === 'permanent');
+  // A wider Trace archive serves a project outside Knowledge's consumption
+  // scope: the page commits, the cursor advances and nothing is imported.
+  const skipped = await worker.cycle();
+  assert.equal(skipped.cursor, 1);
+  assert.equal(skipped.events, 1);
   assert.equal(worker.committedCursor, 1);
+  assert.deepEqual(h.errors, []);
+  assert.deepEqual(h.store.search('other project'), []);
+
+  state.eventsHandler = after => after === 1
+    ? { status: 200, body: page(state.archiveId, 1, 2, [event(2, 'original')], false) }
+    : { status: 200, body: page(state.archiveId, 2, 3, [{ ...event(2, 'original'), archive_seq: 3 }], false) };
+  assert.equal((await worker.cycle()).cursor, 2);
+  await assert.rejects(worker.cycle(), (error: FollowError) => error.code === 'INVALID_PAGE' && error.klass === 'permanent');
+  assert.equal(worker.committedCursor, 2);
 });
 
 test('run retries transient failures with backoff and then catches up', async t => {

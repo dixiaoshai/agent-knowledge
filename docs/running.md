@@ -37,7 +37,7 @@ npm run cli -- search --query "verify_password_hash" --project demo
 }
 ```
 
-只有配置中明确选择的来源会被导入。来源必须绑定到允许的项目；身份从当前 OS uid 获取，工具参数不能设置身份或扩大项目范围。共享同一数据库的多个配置仍按各自的项目、来源和身份过滤搜索与直接读取。配置本身属于本机信任边界，不是多人服务的认证机制。
+只有配置中明确选择的来源会被导入。来源必须绑定到允许的项目；身份从当前 OS uid 获取，工具参数不能设置身份或扩大项目范围。共享同一数据库的多个配置仍按各自的项目、来源和身份过滤搜索与直接读取。`allowed_project_ids` 同时是归档证据的**消费范围**：`follow` 与 `archive-import` 会跳过页面中名单外项目的事件（不写证据、不写墓碑），游标照常提交前进，不会因 Trace 出现新 `project_id` 而整页失败；只有显式指定 `--project` / `project_id` 查询名单外项目时才返回 `FORBIDDEN`。缩小消费范围不会清理已导入证据，扩大范围也不会回填已跳过的历史。配置本身属于本机信任边界，不是多人服务的认证机制。
 
 示例继续使用 `.knowrelay/knowledge.sqlite`，以兼容已有本地数据库；此隐藏目录仅保存运行数据。
 
@@ -63,7 +63,7 @@ node dist/interfaces/cli.js delete-source --config /absolute/path/config.json --
 
 ## Trace 自动拉取（follow）
 
-当 [agent-trace](../../agent-trace/README.md) 以 `serve --config` 常驻运行并授权 Knowledge `content` 视图时，使用独立的 follow worker 自动续读，不必手工导出/导入批次。follow 只读取 Trace 的本机只读 API（`GET /v1/status`、`GET /v1/events`），不读取 Codex/pi 源日志，也不改 Trace 数据库。
+当 [agent-trace](../../agent-trace/README.md) 以 `serve --config` 常驻运行并授权 Knowledge `content` 视图时，使用独立的 follow worker 自动续读，不必手工导出/导入批次。follow 只读取 Trace 的本机只读 API（`GET /v1/status`、`GET /v1/events`），不读取 Codex/pi/dsh 源日志，也不改 Trace 数据库。Trace metadata 与 content 是两个独立服务/数据库；Knowledge 只配置 content API，不需要启动 metadata。
 
 复制 [agent-knowledge.follow.example.json](../agent-knowledge.follow.example.json)，把 `config` 指向既有的 Knowledge 配置（数据库、`allowed_project_ids` 与 owner 都来自它）：
 
@@ -101,6 +101,7 @@ stdout 每行一个 NDJSON 事件（`follow.started`、`follow.page`、`follow.i
 - 首次绑定会沿用同一证据库中已有的手动导入游标；已绑定后 `archive_id`、`trace_url` 或视图变化都会以永久错误暂停（`ARCHIVE_CHANGED` / `TRACE_CHANGED` / `FOLLOW_STATE`），需要显式重建目标库或修正配置，禁止静默归零。
 - `VIEW_UNAVAILABLE` 表示 Trace 归档是 `metadata` 模式，不能提供正文；应使用独立的 content 归档。
 - 删除墓碑随页到达后在本地事务清除证据投影；已提交旧页的重试是幂等重放，不会复活数据。Trace 不按消费进度清理历史，离线期间墓碑仍需保留。
+- 项目授权是消费过滤，不是整页投递门槛：Trace 可以服务更宽的归档（例如全量采集出现的 `unscoped`），Knowledge 只把 `allowed_project_ids` 内的事件写入证据库，名单外事件（含 `session.deleted`）被跳过而不是让整页失败，游标仍提交到 `next_cursor`。页面信封、`archive_seq` 顺序与范围、游标连续性和页面指纹（按完整批次计算，含被跳过事件）仍严格校验；重放同一页仍按原指纹识别为幂等。缩小名单不会清理已导入证据，扩大名单也不会补回跳过的历史。
 
 follow 与 MCP `serve`、看板类进程完全独立：worker 只打开证据库和本机 HTTP，无需 MCP 客户端在线；关闭聊天不会停止同步。反过来，follow 运行时 MCP 的只读查询仍可用（同一证据库的短事务）。手动 `archive-import` 继续保留，用于一次性回放或显式重建。
 

@@ -36,7 +36,7 @@ node dist/interfaces/cli.js serve --config /absolute/path/to/agent-knowledge.exa
 
 ## 已确定的方向
 
-新增共享归档消费：在独立 [agent-trace](../agent-trace/README.md) 明确采集选定会话后，使用 `archive-import --input content-page.json` 导入 v1 content 批次。`archive-search --query TEXT [--project ID]` 检索，`archive-read --archive ARCHIVE_ID --event EVENT_ID` 核对来源。归档证据保存在 `<配置database>.archive-evidence.sqlite`，与活跃知识分开，不依赖原日志仍存在，也不会把工具输出或 agent 声明自动升为确认事实。`follow` 使用同一证据库保存业务游标和单 worker 租约；每页与游标同事务提交，删除标记随页传播。首版不提供按权限过滤的导出流，配置必须允许批次内全部项目，否则整批拒绝；窄范围部署应使用独立归档。
+新增共享归档消费：在独立 [agent-trace](../agent-trace/README.md) 明确采集选定会话后，使用 `archive-import --input content-page.json` 导入 v1 content 批次。`archive-search --query TEXT [--project ID]` 检索，`archive-read --archive ARCHIVE_ID --event EVENT_ID` 核对来源。归档证据保存在 `<配置database>.archive-evidence.sqlite`，与活跃知识分开，不依赖原日志仍存在，也不会把工具输出或 agent 声明自动升为确认事实。`follow` 使用同一证据库保存业务游标和单 worker 租约；每页与游标同事务提交，删除标记随页传播。`allowed_project_ids` 是归档的**消费范围**而不是投递门槛：页面中名单外项目的事件（含删除标记）在导入时跳过、不写库，游标照常提交前进，不会因 Trace 新增项目或全量采集而停摆；显式查询名单外项目仍按 `FORBIDDEN` 拒绝。缩小或扩大消费范围都不会迁移已导入数据：缩小时已有证据保留、不自动清理，扩大的历史不会回填（游标已前进）；需要重建时显式删除证据库并从 0 回放。
 
 - 首先接入 Codex，后续扩展其他 agent。
 - 首先在本机验证，再部署团队共享服务。
@@ -45,6 +45,7 @@ node dist/interfaces/cli.js serve --config /absolute/path/to/agent-knowledge.exa
 - 自学习先实现为有证据、可回滚的记忆和流程改进。
 - 模块通过领域接口协作；SQLite 是首个存储适配器，后续数据库实现遵守同一行为契约。
 - 第一轮包含 Agent Knowledge 使用 skill，指导检索、核对来源与保存经验；Agent Stats 通过可选用量适配器后续接入。
+- 每日回顾由独立 [Agent Journal](../agent-journal/README.md) 消费 Trace content 并输出 Markdown；Knowledge 只按 source 目录索引，且需要 source 级 `generated` 标记（未实现），避免把模型生成物当作来源事实。
 
 ## 实施顺序
 

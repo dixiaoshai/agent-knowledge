@@ -76,7 +76,7 @@ PATH 中的 `codex --version` 返回 `spawn …/codex-darwin-x64/…/codex ENOEN
 - 非法页不推进游标且为永久错误：错误视图、错误起始游标、不前进、回退游标、事件过多、乱序/越界事件、未知信封字段、`archive_id` 变化；metadata 归档报 `VIEW_UNAVAILABLE`，`page_size` 超服务端上限报 `PAGE_TOO_LARGE`。
 - 故障分类：503 + `Retry-After`、超时、连接拒绝为 transient；401/403 为 permanent；重试成功后游标才前进。
 - 租约与身份：第二个 worker 报 `FOLLOW_LOCKED`，释放后可接管；同机死亡进程的租约可立即接管；`trace_url` 变化报 `TRACE_CHANGED`。
-- 授权与回滚：未授权项目的整页以 `FORBIDDEN` 永久拒绝，重复/冲突事件身份导致本地事务回滚，游标均停在原值。
+- 授权与回滚（2026-11-14 行为；2026-11-15 起改为消费过滤，见下节）：未授权项目的整页以 `FORBIDDEN` 永久拒绝，重复/冲突事件身份导致本地事务回滚，游标均停在原值。
 - 退避重试：`run()` 遇到 500 时输出 transient `follow.error` 和 `retry_in_seconds`，退避后自动追平；追平后由信号停止，退出码 0。
 - 删除与序列：墓碑清除证据，已提交旧页重试为幂等重放且不复活；同一会话的后续事件被拒绝；序列空洞合法。
 - 并发：worker 连续提交页时，另一连接持续检索证据库不报锁错误。
@@ -88,3 +88,24 @@ PATH 中的 `codex --version` 返回 `spawn …/codex-darwin-x64/…/codex ENOEN
 - 未与真实 `agent-trace serve`、真实 Codex/pi content 归档联调；未测试 Stats/Knowledge 同时运行、Trace 重启或网络中断后的端到端补取。
 - 未实现目标库重建的交互式流程；当前要求显式删除/移动目标库并重新从 0 回放。
 - 未做长时间运行、blob GC/保留期、MCP 客户端压力测试或 reviewer 独立审查。
+
+## 项目范围改为消费过滤（2026-11-15）
+
+背景：Trace 即将支持全量采集，content 页面会出现 Knowledge 未配置的新 `project_id`（例如兜底的 `unscoped`）。`allowed_project_ids` 从“整页授权门槛”改为“消费范围过滤”：名单外事件在导入时跳过，游标照常提交，不能因项目不匹配而停摆；显式查询名单外项目的 `FORBIDDEN` 语义保持不变。
+
+实际执行（内存/临时文件证据库、合成页面；未连接真实 Trace，未读取真实日志）：
+
+| 范围 | 命令 | 结果 |
+| --- | --- | --- |
+| Agent Knowledge | `npm run check` | 类型检查、**58 项测试**、构建通过（`dist` 重建） |
+
+新增/更新覆盖：
+
+- `tests/archive.test.ts` 混合项目页：同一页含名单内事件、名单外事件和名单外 `session.deleted` → 不抛 `FORBIDDEN`，只落库名单内事件（直接查询证据表确认），墓碑表为空，游标提交前进；整页重放为 `replayed` 且不重复导入；只含名单外事件的页同样提交并推进游标；被跳过事件的 `event_id` 之后在名单内复用时不会被判为重复；显式 `search`/`read` 名单外项目仍抛 `FORBIDDEN`。
+- `tests/follow.test.ts`：worker 拉取名单外项目页成功提交并前进游标且不产生 `follow.error`；随后重复事件身份仍以 `INVALID_PAGE` 永久错误回滚、游标保持。
+- 未改读取侧拒绝语义：`scope()`、CLI `--project`、MCP `project_id` 对显式查询名单外项目仍为 `FORBIDDEN`（新增断言覆盖）。
+
+明确未验证：
+
+- 未与真实 Trace 全量采集（含 `unscoped` 项目）联调；未测试范围变更后的现场数据迁移、超长 backlog 或跨版本页面。
+- 扩缩消费范围按“不迁移既有数据”约定执行：缩小时不清理已导入证据，扩大时不回填已跳过的历史；未提供回填或重建工具。
