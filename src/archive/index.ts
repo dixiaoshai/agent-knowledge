@@ -110,9 +110,9 @@ function validEvent(event: Event): void {
     if (!d[key] || typeof d[key] !== 'object' || Array.isArray(d[key])) invalid('Invalid usage');
     for (const [name, value] of Object.entries(d[key] as Record<string, unknown>)) if (!usageKeys.has(name) || !Number.isSafeInteger(value) || Number(value) < 0) invalid('Invalid usage');
   }
-  if (event.raw !== null && event.runtime === 'pi') {
-    // Pi raw records are native session entries (type/id/message), not Codex
-    // rollouts with a payload envelope; body semantics are adapter-defined.
+  if (event.raw !== null && (event.runtime === 'pi' || event.runtime === 'dsh')) {
+    // Pi and dsh raw records are native session entries (type/id/message), not
+    // Codex rollouts with a payload envelope; body semantics are adapter-defined.
     if (typeof event.raw.type !== 'string') invalid('Invalid raw record');
   }
   assertRefs(event.body);
@@ -182,9 +182,15 @@ export class ArchiveEvidenceStore {
     for (const event of batch.events) {
       if (event.archive_seq <= previous || event.archive_seq > batch.next_cursor) invalid('Invalid event order');
       previous = event.archive_seq;
-      if (!this.allowedProjectIds.includes(event.project_id)) throw new AgentKnowledgeError('FORBIDDEN', 'Project is outside the configured scope');
+      // `allowed_project_ids` is a consumption scope, not a delivery gate: a
+      // wider archive (e.g. full capture) may serve pages that mix projects.
+      // Out-of-scope events, including deletion markers, are skipped rather
+      // than rejected, so following never stalls on a newly collected project.
+      if (!this.allowedProjectIds.includes(event.project_id)) continue;
       validEvent(event);
     }
+    // The page fingerprint always covers the complete batch, including skipped
+    // events, so replay detection keeps its meaning regardless of scope.
     const fingerprint = sha(JSON.stringify(batch));
     this.db.exec('BEGIN IMMEDIATE');
     try {
@@ -199,6 +205,10 @@ export class ArchiveEvidenceStore {
       }
       let imported = 0;
       for (const event of batch.events) {
+        // Consumption scope: skip other projects without writing evidence or a
+        // tombstone. The cursor below still advances to next_cursor, so the
+        // page is acknowledged and the worker can keep following.
+        if (!this.allowedProjectIds.includes(event.project_id)) continue;
         const binding = this.db.prepare('SELECT project_id FROM archive_evidence_events WHERE owner_id=? AND archive_id=? AND session_key=? LIMIT 1').get(this.ownerId, batch.archive_id, event.session_key);
         if (binding && binding.project_id !== event.project_id) invalid('Conflicting session project');
         if (event.kind === 'session.deleted') {

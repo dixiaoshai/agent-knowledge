@@ -1,6 +1,6 @@
 # Agent Knowledge 架构决策
 
-状态：第一阶段知识检索、共享归档证据消费与本项目主动拉取 worker 已实现；自动记忆提取和持续改进为后续阶段。更新日期：2026-11-14。
+状态：第一阶段知识检索、共享归档证据消费与本项目主动拉取 worker 已实现；自动记忆提取和持续改进为后续阶段。更新日期：2026-11-15。
 
 ## 本项目主动拉取（follow）
 
@@ -13,6 +13,10 @@
 归档证据是历史观察，不是活跃 knowledge/memory。content 事件可能把超大正文外置为 `content_ref`（绝对路径、字节数、SHA-256，媒体类型固定 `text/plain`）；导入时校验引用与 `raw` 一致，检索文本仍来自 `body`，正文读取需按引用校验本地文件。`ArchiveEvidenceStore` 单独维护证据表和按 owner/project 限制的读取，数据库为 `<config.database>.archive-evidence.sqlite`；不套用文档当前文件哈希校验，因此原日志清理后仍可核对快照。数据库与现有异步知识事务分开，避免同进程多连接同步锁等待。MCP 增加只读 `search_archive/read_archive_event`；导入只通过 CLI，不接受 MCP 写入。经验候选生成、验证、晋升及关联失效传播仍未实现。
 
 消费者处理幂等页、游标冲突、未知类型和删除标记；未知类型的原始证据不执行。仅本机身份/项目限制，尚无团队多用户认证或按授权过滤导出流。`record_hash` 为归档给出的源行哈希声明，批次中的 parsed raw 不足以独立重算该原始字节哈希。Agent Knowledge 自身未来模型调用用量仍可通过 UsageSink 输出；不反向作为外部宿主原始事件重复采集。
+
+## 2026-11-15 项目范围改为消费过滤
+
+`allowed_project_ids` 对归档证据是**消费范围**，不再是投递或整页门槛。Trace 转向全量采集后，content 面可能包含 Knowledge 未配置的新 `project_id`（例如兜底的 `unscoped`）；`importBatch` 对名单外事件（含 `session.deleted`）直接跳过，不写证据、不写墓碑，仍在同一事务内把游标提交到 `next_cursor`，因此页面不会因项目不匹配而永久失败或停摆。页面级校验保持：信封/schema、`archive_seq` 递增与范围、游标连续性与页面指纹；指纹按完整批次计算，重放语义不受消费范围影响。`scope()`、CLI `--project` 与 MCP `project_id` 对“显式查询名单外项目”仍返回 `FORBIDDEN`，读取侧授权没有放宽。缩小或扩大消费范围都不会迁移既有数据：缩小时已导入证据保留（不会自动清理），扩大时被跳过的历史不会回填（游标已前进）；需要重建时显式删除证据库并从 0 回放。
 
 ## 决策与范围
 
@@ -100,6 +104,10 @@ Worker：从持久化任务提取知识和记忆，写回候选记录
 `LexicalSearchIndex`、`VectorIndex`、`RelationReader` 分别提供派生检索能力。首版词法/关系实现可以使用 SQLite；查询用例仅依赖对应接口。更换权威数据库与更换检索引擎是独立操作；外部索引使用版本和删除状态校验，索引延迟不能让已撤回内容重新进入有效结果。
 
 选择后端由配置和组合入口完成。未来增加 PostgreSQL 等实现时，需提供自己的 schema 迁移与数据迁移程序，并通过共同的仓储契约测试：原子事务、幂等、版本冲突、租约并发领取、游标稳定性、作用域与删除一致性。首轮提供 SQLite 实现与可复用验收契约；第二种数据库的等价性在其实现后验证。
+
+## Agent Journal 边界
+
+每日回顾与跨天经验整合由独立 [Agent Journal](../../agent-journal/README.md) 负责；它消费 Trace content、维护自己的 cursor、日缓冲和模型调用。Knowledge 不读取其数据库、不调用其命令，只在 Journal 把日报写入 Markdown 目录后按普通 source 索引。该 source 需要 `generated: true` 标记，把模型生成物与来源事实分开（尚未实现）；在实现前不索引日报，避免搜索把总结当原始证据引用。
 
 ## Agent Stats 接入边界
 
